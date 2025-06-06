@@ -1,7 +1,6 @@
+from flask import Flask, render_template, request, jsonify
 import os
 import json
-import time
-from typing import Dict, Optional
 from dotenv import load_dotenv
 import google.generativeai as genai
 from selenium import webdriver
@@ -13,6 +12,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
+app = Flask(__name__)
+
 # Load environment variables
 load_dotenv()
 
@@ -22,10 +23,9 @@ if not GEMINI_API_KEY:
     raise ValueError("Please set GEMINI_API_KEY in .env file")
 
 genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
 
-model = genai.GenerativeModel('models/gemini-1.5-flash-latest')  # Using Flash model for faster responses
-
-def setup_driver() -> webdriver.Chrome:
+def setup_driver():
     """Set up and return a Chrome WebDriver instance."""
     chrome_options = Options()
     chrome_options.add_argument('--headless')
@@ -44,7 +44,7 @@ def get_subreddit_suggestion(topic: str) -> str:
     response = model.generate_content(prompt)
     return response.text.strip()
 
-def scrape_subreddit(subreddit_name: str) -> Dict:
+def scrape_subreddit(subreddit_name: str) -> dict:
     """Scrape the top posts from a subreddit."""
     driver = setup_driver()
     subreddit_data = {
@@ -53,16 +53,13 @@ def scrape_subreddit(subreddit_name: str) -> Dict:
     }
     
     try:
-        # Navigate to the subreddit
         url = f'https://old.reddit.com/r/{subreddit_name}/'
         driver.get(url)
         
-        # Wait for posts to load (using old Reddit's structure)
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CLASS_NAME, "thing"))
         )
         
-        # Get post elements
         post_elements = driver.find_elements(By.CLASS_NAME, "thing")[:5]
         
         for post in post_elements:
@@ -93,7 +90,7 @@ def scrape_subreddit(subreddit_name: str) -> Dict:
         
     return subreddit_data
 
-def analyze_posts(subreddit_data: Dict) -> str:
+def analyze_posts(subreddit_data: dict) -> str:
     """Use Gemini to analyze the posts and provide insights."""
     prompt = f"""Analyze these Reddit posts from r/{subreddit_data['name']} and provide a brief summary of the main discussions and trends.
     For each point in your analysis, include the relevant post title and its URL.
@@ -106,33 +103,39 @@ def analyze_posts(subreddit_data: Dict) -> str:
     response = model.generate_content(prompt)
     return response.text
 
-def main():
-    """Main function to run the Reddit AI agent."""
-    print("\n🤖 Welcome to the Reddit AI Agent!\n")
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    topic = request.json.get('topic')
+    if not topic:
+        return jsonify({'error': 'No topic provided'}), 400
     
-    while True:
-        topic = input("\nEnter a topic to analyze (or 'quit' to exit): ").strip()
-        if topic.lower() == 'quit':
-            break
-            
-        print("\n🔍 Finding the most relevant subreddit...")
+    try:
+        # Get subreddit suggestion
         subreddit = get_subreddit_suggestion(topic)
-        print(f"📍 Selected subreddit: r/{subreddit}")
         
-        print("\n🌐 Scraping top posts...")
+        # Scrape posts
         subreddit_data = scrape_subreddit(subreddit)
         
         if not subreddit_data['posts']:
-            print("❌ No posts found. The subreddit might be private or not accessible.")
-            continue
-            
-        print("\n🧠 Analyzing posts...")
+            return jsonify({
+                'error': 'No posts found. The subreddit might be private or not accessible.'
+            }), 404
+        
+        # Analyze posts
         analysis = analyze_posts(subreddit_data)
         
-        print("\n📊 Analysis Results:")
-        print(analysis)
+        return jsonify({
+            'subreddit': subreddit,
+            'analysis': analysis,
+            'raw_data': subreddit_data
+        })
         
-        print("\n" + "="*50 + "\n")
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-if __name__ == "__main__":
-    main() 
+if __name__ == '__main__':
+    app.run(debug=True, host='127.0.0.1', port=8000) 
